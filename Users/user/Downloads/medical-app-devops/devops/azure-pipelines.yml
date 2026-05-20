@@ -1,0 +1,29 @@
+trigger:
+- main
+
+pool:
+  vmImage: ubuntu-latest
+
+steps:
+
+- task: NodeTool@0
+  inputs:
+    versionSpec: '18.x'
+
+# FRONTEND
+- script: npm install
+  workingDirectory: frontend
+  displayName: Install Frontend Dependencies
+
+- script: npm run build
+  workingDirectory: frontend
+  displayName: Build Frontend
+
+# BACKEND
+- script: npm install
+  workingDirectory: backend
+  displayName: Install Backend Dependencies
+
+- script: npm test
+  workingDirectory: backend
+  displayName: Run Backend Tests
