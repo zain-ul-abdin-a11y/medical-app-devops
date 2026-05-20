@@ -1,0 +1,42 @@
+---
+# AWS Load Balancer Controller must be installed on EKS first.
+# Install via Helm:
+#   helm repo add eks https://aws.github.io/eks-charts
+#   helm install aws-load-balancer-controller eks/aws-load-balancer-controller \
+#     --namespace kube-system \
+#     --set clusterName=medical-app-cluster \
+#     --set serviceAccount.create=true
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: medical-app-ingress
+  namespace: medical-app
+  annotations:
+    kubernetes.io/ingress.class: alb
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/healthcheck-path: /health
+    # HTTPS (add your ACM certificate ARN here):
+    # alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:us-east-1:ACCOUNT_ID:certificate/CERT_ID
+    # alb.ingress.kubernetes.io/ssl-redirect: '443'
+spec:
+  rules:
+    - http:
+        paths:
+          # API calls go to the backend
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: backend-service
+                port:
+                  number: 80
+          # Everything else goes to the React frontend
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: frontend-service
+                port:
+                  number: 80
