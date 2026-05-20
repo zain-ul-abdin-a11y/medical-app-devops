@@ -11,19 +11,15 @@ steps:
     versionSpec: '18.x'
 
 # FRONTEND
-- script: npm install
-  workingDirectory: frontend
-  displayName: Install Frontend Dependencies
-
-- script: npm run build
-  workingDirectory: frontend
-  displayName: Build Frontend
+- script: |
+    cd frontend
+    npm install
+    npm test
+  displayName: 'Frontend tests'
 
 # BACKEND
-- script: npm install
-  workingDirectory: backend
-  displayName: Install Backend Dependencies
-
-- script: npm test
-  workingDirectory: backend
-  displayName: Run Backend Tests
+- script: |
+    cd backend
+    npm install
+    npm test
+  displayName: 'Backend tests'
