@@ -1,0 +1,142 @@
+name: Build & Deploy to AWS EKS
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  AWS_REGION: us-east-1
+  EKS_CLUSTER: medical-app-cluster
+  NAMESPACE: medical-app
+
+jobs:
+  # ─── Job 1: Test ──────────────────────────────────────────────────
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install backend deps
+        working-directory: backend
+        run: npm ci
+
+      - name: Run backend tests
+        working-directory: backend
+        run: npm test
+
+  # ─── Job 2: Build & Push Docker Images ───────────────────────────
+  build:
+    name: Build & Push Images
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.ref == 'refs/heads/main'    # only deploy on main branch
+    outputs:
+      image_tag: ${{ steps.vars.outputs.sha_short }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set image tag (short SHA)
+        id: vars
+        run: echo "sha_short=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # ── Backend ──
+      - name: Build & push backend image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ steps.vars.outputs.sha_short }}
+        run: |
+          docker build \
+            -t $ECR_REGISTRY/medical-app/backend:$IMAGE_TAG \
+            -t $ECR_REGISTRY/medical-app/backend:latest \
+            ./backend
+          docker push $ECR_REGISTRY/medical-app/backend:$IMAGE_TAG
+          docker push $ECR_REGISTRY/medical-app/backend:latest
+
+      # ── Frontend ──
+      - name: Build & push frontend image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ steps.vars.outputs.sha_short }}
+        run: |
+          docker build \
+            --build-arg VITE_API_URL=http://YOUR_LOAD_BALANCER_URL/api \
+            -t $ECR_REGISTRY/medical-app/frontend:$IMAGE_TAG \
+            -t $ECR_REGISTRY/medical-app/frontend:latest \
+            ./frontend
+          docker push $ECR_REGISTRY/medical-app/frontend:$IMAGE_TAG
+          docker push $ECR_REGISTRY/medical-app/frontend:latest
+
+  # ─── Job 3: Deploy to EKS ────────────────────────────────────────
+  deploy:
+    name: Deploy to EKS
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Update kubeconfig for EKS
+        run: |
+          aws eks update-kubeconfig \
+            --name ${{ env.EKS_CLUSTER }} \
+            --region ${{ env.AWS_REGION }}
+
+      - name: Deploy to Kubernetes
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ needs.build.outputs.image_tag }}
+        run: |
+          # Rolling update — sets the new image tag on each deployment
+          kubectl set image deployment/backend \
+            backend=$ECR_REGISTRY/medical-app/backend:$IMAGE_TAG \
+            --namespace=${{ env.NAMESPACE }}
+
+          kubectl set image deployment/frontend \
+            frontend=$ECR_REGISTRY/medical-app/frontend:$IMAGE_TAG \
+            --namespace=${{ env.NAMESPACE }}
+
+          # Wait for rollout to complete
+          kubectl rollout status deployment/backend --namespace=${{ env.NAMESPACE }} --timeout=5m
+          kubectl rollout status deployment/frontend --namespace=${{ env.NAMESPACE }} --timeout=5m
+
+      - name: Verify deployment
+        run: |
+          kubectl get pods --namespace=${{ env.NAMESPACE }}
+          kubectl get ingress --namespace=${{ env.NAMESPACE }}
